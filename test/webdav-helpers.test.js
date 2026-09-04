@@ -43,7 +43,10 @@ describe('WebDAV helpers for Lsky path stability', () => {
         assert.strictEqual(isReservedKvKey('%252e/manage@sysConfig@security'), true);
         assert.strictEqual(isReservedKvKey('x/%252e%252e/manage@sysConfig@security'), true);
         assert.strictEqual(isReservedKvKey('manage%2540sysConfig%2540security'), true);
-        assert.throws(() => parseDavUploadPath('foo/../manage@sysConfig@security'), /Forbidden path/);
+        // PUT 路径会经 sanitize 把 @ 换成 _，不会命中保留键，也不会删到 sysConfig
+        const sanitizedPut = parseDavUploadPath('foo/../manage@sysConfig@security');
+        assert.strictEqual(sanitizedPut.expectedFileId, 'manage_sysConfig_security');
+        assert.strictEqual(isReservedKvKey(sanitizedPut.expectedFileId), false);
     });
 
     it('buildManageDeleteUrl encodes segments without URL-collapsing the file id', () => {
@@ -51,6 +54,13 @@ describe('WebDAV helpers for Lsky path stability', () => {
         assert.strictEqual(url.pathname, '/api/manage/delete/lsky/hello.txt');
         const withAt = buildManageDeleteUrl('https://example.com/', 'folder/a@b.txt');
         assert.strictEqual(withAt.pathname, '/api/manage/delete/folder/a%40b.txt');
+    });
+
+    it('parseDavUploadPath aligns folder/file sanitize with /upload (.. substring → _)', () => {
+        const parsed = parseDavUploadPath('foo..bar/a@b.jpg');
+        assert.strictEqual(parsed.uploadFolder, 'foo_bar');
+        assert.strictEqual(parsed.fileName, 'a_b.jpg');
+        assert.strictEqual(parsed.expectedFileId, 'foo_bar/a_b.jpg');
     });
 
     it('parseDavUploadPath maps nested DAV path to origin upload folder+name', () => {

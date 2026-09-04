@@ -113,6 +113,39 @@ export function buildManageDeleteUrl(baseUrl, fileId) {
 }
 
 /**
+ * 与 uploadTools.sanitizeFileName 对齐（避免 WebDAV expectedFileId 与实际上传 id 漂移）
+ * @param {string} fileName
+ * @returns {string}
+ */
+export function sanitizeDavFileName(fileName) {
+    let name = fullyDecodeUriComponent(fileName);
+    name = name.split('/').pop();
+    const unsafeCharsRe = /[\\\/:\*\?"'<>\| \(\)\[\]\{\}#%\^`~;@&=\+\$,]/g;
+    return name.replace(unsafeCharsRe, '_');
+}
+
+/**
+ * 与 uploadTools.sanitizeUploadFolder 对齐
+ * @param {string} folder
+ * @returns {string}
+ */
+export function sanitizeDavUploadFolder(folder) {
+    if (!folder || folder.trim() === '') {
+        return '';
+    }
+    folder = fullyDecodeUriComponent(folder);
+    // 与 upload 一致：任意位置的 .. 子串替换为 _
+    folder = folder.replace(/\.\./g, '_');
+    folder = folder.split('/').map((seg) => (seg === '.' ? '_' : seg)).join('/');
+    folder = folder.replace(/\\/g, '/').replace(/\/{2,}/g, '/').replace(/^\/+/, '').replace(/\/+$/, '');
+    const segments = folder.split('/');
+    return segments
+        .map((seg) => seg.replace(/[\\:\*\?"'<>\| \(\)\[\]\{\}#%\^`~;@&=\+\$,]/g, '_'))
+        .filter((seg) => seg.length > 0)
+        .join('/');
+}
+
+/**
  * 从 DAV 相对路径解析上传参数（uploadNameType=origin 时 file id === fullPath）
  * @param {string} fullPath - 去掉 /dav 前缀后的路径，如 "2026/09/03/photo.jpg"
  * @returns {{ uploadFolder: string, fileName: string, expectedFileId: string }}
@@ -125,14 +158,13 @@ export function parseDavUploadPath(fullPath) {
 
     const lastSlashIndex = normalized.lastIndexOf('/');
     let uploadFolder = lastSlashIndex > -1 ? normalized.substring(0, lastSlashIndex) : '';
-    const fileName = lastSlashIndex > -1 ? normalized.substring(lastSlashIndex + 1) : normalized;
+    let fileName = lastSlashIndex > -1 ? normalized.substring(lastSlashIndex + 1) : normalized;
 
-    if (uploadFolder) {
-        uploadFolder = uploadFolder
-            .replace(/\\/g, '/')
-            .replace(/\/{2,}/g, '/')
-            .replace(/^\/+/, '')
-            .replace(/\/+$/, '');
+    // 与 /upload 的 sanitize 对齐，保证覆盖删除与公开 URL 使用同一 file id
+    uploadFolder = sanitizeDavUploadFolder(uploadFolder);
+    fileName = sanitizeDavFileName(fileName);
+    if (!fileName) {
+        throw new Error('Invalid file name');
     }
 
     const expectedFileId = uploadFolder ? `${uploadFolder}/${fileName}` : fileName;
