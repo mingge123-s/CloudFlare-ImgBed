@@ -3,6 +3,26 @@
  * 保证 Lsky 等客户端：PUT /dav/<rel> ↔ 公开 /file/<rel>
  */
 
+/** KV 中系统/内部键前缀，禁止作为 WebDAV 文件 id（与 list.js 过滤一致并扩展） */
+const RESERVED_KEY_PREFIXES = [
+    'manage@',
+    'chunk_',
+    'upload_session_',
+    'multipart_',
+    'session@',
+];
+
+/**
+ * 是否为保留 KV 键（禁止 PUT/DELETE 覆盖或删除系统配置）
+ * @param {string} fileId
+ * @returns {boolean}
+ */
+export function isReservedKvKey(fileId) {
+    if (!fileId || typeof fileId !== 'string') return true;
+    const id = fileId.replace(/^\/+/, '');
+    return RESERVED_KEY_PREFIXES.some((prefix) => id.startsWith(prefix));
+}
+
 /**
  * 从 DAV 相对路径解析上传参数（uploadNameType=origin 时 file id === fullPath）
  * @param {string} fullPath - 去掉 /dav 前缀后的路径，如 "2026/09/03/photo.jpg"

@@ -7,6 +7,7 @@ import {
     fileIdFromUploadSrc,
     davFileHref,
     davDirHref,
+    isReservedKvKey,
 } from "./webdavHelpers.js";
 
 export async function onRequest(context) {
@@ -174,19 +175,37 @@ async function handlePut(request, env) {
 
     const { uploadFolder, fileName, expectedFileId } = parsed;
 
+    // 禁止覆盖/删除系统 KV 键（如 manage@sysConfig@*）
+    if (isReservedKvKey(expectedFileId)) {
+        return new Response('Forbidden path', { status: 403 });
+    }
+
     // 同路径覆盖：先删旧记录，保证 DAV path 仍映射到同一 file id（避免 origin 落到 name(1).ext）
+    // 删除必须成功，否则 origin 命名会落到 name(1).ext，破坏 Lsky 路径约定
     try {
         const db = getDatabase(env);
-        const existing = await db.get(expectedFileId);
-        if (existing !== null) {
+        const existing = await db.getWithMetadata(expectedFileId);
+        // 仅当存在文件元数据时视为可覆盖的图床文件（避免误伤无 Channel 的异常键）
+        if (existing && existing.metadata && (existing.metadata.Channel || existing.metadata.TimeStamp)) {
             const deleteUrl = new URL(`/api/manage/delete/${expectedFileId}`, request.url);
-            await fetch(deleteUrl.toString(), {
+            const deleteResponse = await fetch(deleteUrl.toString(), {
                 method: 'DELETE',
                 headers: await getApiHeaders(env)
             });
+            let deleteResult = null;
+            try {
+                deleteResult = await deleteResponse.json();
+            } catch (e) {
+                /* non-JSON */
+            }
+            if (!deleteResponse.ok || !deleteResult?.success) {
+                const msg = deleteResult?.error || `status ${deleteResponse.status}`;
+                return new Response(`Overwrite failed: could not delete existing file (${msg})`, { status: 409 });
+            }
         }
     } catch (e) {
-        console.warn('WebDAV overwrite pre-delete failed:', e.message);
+        console.error('WebDAV overwrite pre-delete failed:', e.stack);
+        return new Response(`Overwrite failed: ${e.message}`, { status: 500 });
     }
 
     const fileContent = await request.blob();
@@ -246,6 +265,10 @@ async function handleDelete(request, env) {
 
     const isFolder = path.endsWith('/');
     const cleanPath = isFolder ? path.slice(0, -1) : path;
+
+    if (isReservedKvKey(cleanPath)) {
+        return new Response('Forbidden path', { status: 403 });
+    }
 
     const deleteUrl = new URL(`/api/manage/delete/${cleanPath}`, request.url);
     if (isFolder) deleteUrl.searchParams.set('folder', 'true');

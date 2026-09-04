@@ -6,9 +6,21 @@ import {
     lskyWebDavBaseUri,
     davFileHref,
     davDirHref,
+    isReservedKvKey,
 } from '../functions/dav/webdavHelpers.js';
 
 describe('WebDAV helpers for Lsky path stability', () => {
+    it('rejects reserved KV keys that must not be DELETE/PUT via WebDAV', () => {
+        assert.strictEqual(isReservedKvKey('manage@sysConfig@security'), true);
+        assert.strictEqual(isReservedKvKey('manage@sysConfig@others'), true);
+        assert.strictEqual(isReservedKvKey('chunk_upload_0'), true);
+        assert.strictEqual(isReservedKvKey('upload_session_x'), true);
+        assert.strictEqual(isReservedKvKey('multipart_x'), true);
+        assert.strictEqual(isReservedKvKey('session@abc'), true);
+        assert.strictEqual(isReservedKvKey('2026/09/04/photo.jpg'), false);
+        assert.strictEqual(isReservedKvKey('lsky-test/hello.txt'), false);
+    });
+
     it('parseDavUploadPath maps nested DAV path to origin upload folder+name', () => {
         const parsed = parseDavUploadPath('2026/09/03/photo.jpg');
         assert.strictEqual(parsed.uploadFolder, '2026/09/03');
