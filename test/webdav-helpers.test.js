@@ -7,6 +7,8 @@ import {
     davFileHref,
     davDirHref,
     isReservedKvKey,
+    normalizeDavRelativePath,
+    buildManageDeleteUrl,
 } from '../functions/dav/webdavHelpers.js';
 
 describe('WebDAV helpers for Lsky path stability', () => {
@@ -19,6 +21,36 @@ describe('WebDAV helpers for Lsky path stability', () => {
         assert.strictEqual(isReservedKvKey('session@abc'), true);
         assert.strictEqual(isReservedKvKey('2026/09/04/photo.jpg'), false);
         assert.strictEqual(isReservedKvKey('lsky-test/hello.txt'), false);
+    });
+
+    it('normalizes encoded . / .. and %40 before reserved-key checks', () => {
+        assert.strictEqual(
+            normalizeDavRelativePath('%252e/manage@sysConfig@security'),
+            'manage@sysConfig@security'
+        );
+        assert.strictEqual(
+            normalizeDavRelativePath('x/%252e%252e/manage@sysConfig@security'),
+            'manage@sysConfig@security'
+        );
+        assert.strictEqual(
+            normalizeDavRelativePath('foo/../manage@sysConfig@security'),
+            'manage@sysConfig@security'
+        );
+        assert.strictEqual(
+            normalizeDavRelativePath('manage%2540sysConfig%2540security'),
+            'manage@sysConfig@security'
+        );
+        assert.strictEqual(isReservedKvKey('%252e/manage@sysConfig@security'), true);
+        assert.strictEqual(isReservedKvKey('x/%252e%252e/manage@sysConfig@security'), true);
+        assert.strictEqual(isReservedKvKey('manage%2540sysConfig%2540security'), true);
+        assert.throws(() => parseDavUploadPath('foo/../manage@sysConfig@security'), /Forbidden path/);
+    });
+
+    it('buildManageDeleteUrl encodes segments without URL-collapsing the file id', () => {
+        const url = buildManageDeleteUrl('https://example.com/dav/x', 'lsky/hello.txt');
+        assert.strictEqual(url.pathname, '/api/manage/delete/lsky/hello.txt');
+        const withAt = buildManageDeleteUrl('https://example.com/', 'folder/a@b.txt');
+        assert.strictEqual(withAt.pathname, '/api/manage/delete/folder/a%40b.txt');
     });
 
     it('parseDavUploadPath maps nested DAV path to origin upload folder+name', () => {
@@ -36,8 +68,8 @@ describe('WebDAV helpers for Lsky path stability', () => {
     });
 
     it('parseDavUploadPath rejects directory-looking paths', () => {
-        assert.throws(() => parseDavUploadPath('folder/'), /Invalid file name/);
-        assert.throws(() => parseDavUploadPath(''), /Invalid file name/);
+        assert.throws(() => parseDavUploadPath('folder/'), /Invalid/);
+        assert.throws(() => parseDavUploadPath(''), /Invalid/);
     });
 
     it('fileIdFromUploadSrc extracts id from absolute and relative src', () => {

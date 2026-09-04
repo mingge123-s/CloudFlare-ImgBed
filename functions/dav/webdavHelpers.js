@@ -13,14 +13,103 @@ const RESERVED_KEY_PREFIXES = [
 ];
 
 /**
+ * 反复 decodeURIComponent，直到稳定（防 %252e / %2540 双重编码绕过）
+ * @param {string} value
+ * @returns {string}
+ */
+export function fullyDecodeUriComponent(value) {
+    if (!value || typeof value !== 'string') return '';
+    let current = value;
+    for (let i = 0; i < 5; i++) {
+        if (!/%[0-9a-fA-F]{2}/.test(current)) break;
+        try {
+            const next = decodeURIComponent(current);
+            if (next === current) break;
+            current = next;
+        } catch (e) {
+            break;
+        }
+    }
+    return current;
+}
+
+/**
+ * 规范化 DAV 相对路径：充分解码 + 解析 . / ..，得到真实 KV file id
+ * @param {string} relativePath - 已去掉 /dav 前缀的路径
+ * @returns {string} 规范化后的相对路径（无首尾 /，目录可带尾 /）
+ * @throws {Error} 路径非法或试图逃逸根目录
+ */
+export function normalizeDavRelativePath(relativePath) {
+    if (relativePath == null || relativePath === '') {
+        throw new Error('Invalid path');
+    }
+    let path = fullyDecodeUriComponent(String(relativePath));
+    path = path.replace(/\\/g, '/');
+
+    const isDir = path.endsWith('/');
+    const parts = path.split('/');
+    const stack = [];
+    for (const part of parts) {
+        if (part === '' || part === '.') continue;
+        if (part === '..') {
+            if (stack.length === 0) {
+                throw new Error('Invalid path');
+            }
+            stack.pop();
+            continue;
+        }
+        // 段内再充分解码一次（防御段级双重编码）
+        const decodedPart = fullyDecodeUriComponent(part);
+        if (decodedPart === '' || decodedPart === '.') continue;
+        if (decodedPart === '..') {
+            if (stack.length === 0) throw new Error('Invalid path');
+            stack.pop();
+            continue;
+        }
+        stack.push(decodedPart);
+    }
+
+    if (stack.length === 0) {
+        throw new Error('Invalid path');
+    }
+
+    const normalized = stack.join('/');
+    return isDir ? `${normalized}/` : normalized;
+}
+
+/**
  * 是否为保留 KV 键（禁止 PUT/DELETE 覆盖或删除系统配置）
  * @param {string} fileId
  * @returns {boolean}
  */
 export function isReservedKvKey(fileId) {
     if (!fileId || typeof fileId !== 'string') return true;
-    const id = fileId.replace(/^\/+/, '');
+    let id;
+    try {
+        id = normalizeDavRelativePath(fileId.replace(/\/+$/, ''));
+    } catch (e) {
+        return true;
+    }
     return RESERVED_KEY_PREFIXES.some((prefix) => id.startsWith(prefix));
+}
+
+/**
+ * 构造 /api/manage/delete/... URL：按段 encode，避免 URL 解析再次折叠 . / ..
+ * @param {string} baseUrl - 任意同站 URL
+ * @param {string} fileId - 已规范化的 file id
+ * @returns {URL}
+ */
+export function buildManageDeleteUrl(baseUrl, fileId) {
+    const encoded = fileId
+        .split('/')
+        .filter(Boolean)
+        .map((seg) => encodeURIComponent(seg))
+        .join('/');
+    const url = new URL(baseUrl);
+    url.pathname = `/api/manage/delete/${encoded}`;
+    url.search = '';
+    url.hash = '';
+    return url;
 }
 
 /**
@@ -29,24 +118,17 @@ export function isReservedKvKey(fileId) {
  * @returns {{ uploadFolder: string, fileName: string, expectedFileId: string }}
  */
 export function parseDavUploadPath(fullPath) {
-    if (!fullPath || fullPath.endsWith('/')) {
+    const normalized = normalizeDavRelativePath(fullPath);
+    if (!normalized || normalized.endsWith('/')) {
         throw new Error('Invalid file name');
     }
 
-    const lastSlashIndex = fullPath.lastIndexOf('/');
-    let uploadFolder = lastSlashIndex > -1 ? fullPath.substring(0, lastSlashIndex) : '';
-    const fileName = lastSlashIndex > -1 ? fullPath.substring(lastSlashIndex + 1) : fullPath;
+    const lastSlashIndex = normalized.lastIndexOf('/');
+    let uploadFolder = lastSlashIndex > -1 ? normalized.substring(0, lastSlashIndex) : '';
+    const fileName = lastSlashIndex > -1 ? normalized.substring(lastSlashIndex + 1) : normalized;
 
     if (uploadFolder) {
-        if (/%[0-9a-fA-F]{2}/.test(uploadFolder)) {
-            try {
-                uploadFolder = decodeURIComponent(uploadFolder);
-            } catch (e) {
-                /* ignore */
-            }
-        }
         uploadFolder = uploadFolder
-            .replace(/\.\./g, '_')
             .replace(/\\/g, '/')
             .replace(/\/{2,}/g, '/')
             .replace(/^\/+/, '')
@@ -54,6 +136,9 @@ export function parseDavUploadPath(fullPath) {
     }
 
     const expectedFileId = uploadFolder ? `${uploadFolder}/${fileName}` : fileName;
+    if (isReservedKvKey(expectedFileId)) {
+        throw new Error('Forbidden path');
+    }
     return { uploadFolder, fileName, expectedFileId };
 }
 

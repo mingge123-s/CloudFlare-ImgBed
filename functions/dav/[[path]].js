@@ -8,6 +8,8 @@ import {
     davFileHref,
     davDirHref,
     isReservedKvKey,
+    normalizeDavRelativePath,
+    buildManageDeleteUrl,
 } from "./webdavHelpers.js";
 
 export async function onRequest(context) {
@@ -170,15 +172,11 @@ async function handlePut(request, env) {
     try {
         parsed = parseDavUploadPath(fullPath);
     } catch (e) {
-        return new Response('Invalid file name', { status: 400 });
+        const status = e.message === 'Forbidden path' ? 403 : 400;
+        return new Response(e.message === 'Forbidden path' ? 'Forbidden path' : 'Invalid file name', { status });
     }
 
     const { uploadFolder, fileName, expectedFileId } = parsed;
-
-    // 禁止覆盖/删除系统 KV 键（如 manage@sysConfig@*）
-    if (isReservedKvKey(expectedFileId)) {
-        return new Response('Forbidden path', { status: 403 });
-    }
 
     // 同路径覆盖：先删旧记录，保证 DAV path 仍映射到同一 file id（避免 origin 落到 name(1).ext）
     // 删除必须成功，否则 origin 命名会落到 name(1).ext，破坏 Lsky 路径约定
@@ -187,7 +185,7 @@ async function handlePut(request, env) {
         const existing = await db.getWithMetadata(expectedFileId);
         // 仅当存在文件元数据时视为可覆盖的图床文件（避免误伤无 Channel 的异常键）
         if (existing && existing.metadata && (existing.metadata.Channel || existing.metadata.TimeStamp)) {
-            const deleteUrl = new URL(`/api/manage/delete/${expectedFileId}`, request.url);
+            const deleteUrl = buildManageDeleteUrl(request.url, expectedFileId);
             const deleteResponse = await fetch(deleteUrl.toString(), {
                 method: 'DELETE',
                 headers: await getApiHeaders(env)
@@ -260,17 +258,24 @@ async function handlePut(request, env) {
 }
 
 async function handleDelete(request, env) {
-    const path = decodeURIComponent(new URL(request.url).pathname.substring(1));
-    if (!path) return new Response('Invalid path for DELETE', { status: 400 });
+    const rawPath = decodeURIComponent(new URL(request.url).pathname.substring(1));
+    if (!rawPath) return new Response('Invalid path for DELETE', { status: 400 });
 
-    const isFolder = path.endsWith('/');
-    const cleanPath = isFolder ? path.slice(0, -1) : path;
+    let normalized;
+    try {
+        normalized = normalizeDavRelativePath(rawPath);
+    } catch (e) {
+        return new Response('Invalid path for DELETE', { status: 400 });
+    }
+
+    const isFolder = normalized.endsWith('/');
+    const cleanPath = isFolder ? normalized.slice(0, -1) : normalized;
 
     if (isReservedKvKey(cleanPath)) {
         return new Response('Forbidden path', { status: 403 });
     }
 
-    const deleteUrl = new URL(`/api/manage/delete/${cleanPath}`, request.url);
+    const deleteUrl = buildManageDeleteUrl(request.url, cleanPath);
     if (isFolder) deleteUrl.searchParams.set('folder', 'true');
 
     try {
